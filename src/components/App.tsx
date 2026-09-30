@@ -1,5 +1,6 @@
 import { useMemo, useCallback, useRef, useState, useEffect } from "preact/hooks";
 import { type Delimiter } from "../parser/detect";
+import { decodeBuffer } from "../parser/encoding";
 import { parseCSV, serializeCSV, type ParseResult } from "../parser/csv-engine";
 import { useTableData, type TableState } from "../hooks/useTableData";
 import { useProgressiveLoad } from "../hooks/useProgressiveLoad";
@@ -17,9 +18,12 @@ interface AppProps {
   initialParsed: ParseResult;
   initialDelimiter: Delimiter;
   initialEncoding?: string;
+  /** Raw file bytes, so a different encoding can be applied without re-reading. */
+  initialBuffer?: ArrayBuffer | null;
   filePath: string;
   initialColumnConfig: ColumnConfig;
   onColumnConfigChange: (config: ColumnConfig, columnCount: number) => void | Promise<void>;
+  onEncodingChange: (encoding: string) => void | Promise<void>;
   onDataChange: (data: string) => void;
 }
 
@@ -115,9 +119,11 @@ export function App({
   initialParsed,
   initialDelimiter,
   initialEncoding,
+  initialBuffer,
   filePath,
   initialColumnConfig,
   onColumnConfigChange,
+  onEncodingChange,
   onDataChange,
 }: AppProps) {
   // Use pre-parsed result from csv-view — no redundant re-parsing
@@ -129,6 +135,8 @@ export function App({
   const [selection, setSelection] = useState<SelectionRange | null>(null);
   const [hasHeader, setHasHeader] = useState<boolean>(initialParsed.hasHeader);
   const sortedRowIndicesRef = useRef<number[] | null>(null);
+  // Latest text for the file, so re-parsing keeps whatever encoding was applied.
+  const currentTextRef = useRef<string>(initialData);
 
   const initialState = useMemo<TableState>(
     () => ensureEditableState({ headers: initialParsed.headers, data: initialParsed.data }),
@@ -213,21 +221,37 @@ export function App({
   const handleDelimiterChange = useCallback(
     (newDelimiter: Delimiter) => {
       setDelimiter(newDelimiter);
-      const { headers: nextHeaders, data: nextData } = parseCSV(initialData, newDelimiter, hasHeader);
+      const { headers: nextHeaders, data: nextData } = parseCSV(currentTextRef.current, newDelimiter, hasHeader);
       reset(ensureEditableState({ headers: nextHeaders, data: nextData }));
       setColumnConfig((prev) => normalizeColumnConfig(prev, nextHeaders.length));
     },
-    [hasHeader, initialData, reset],
+    [hasHeader, reset],
   );
 
   const handleHasHeaderChange = useCallback(
     (nextHasHeader: boolean) => {
       setHasHeader(nextHasHeader);
-      const { headers: nextHeaders, data: nextData } = parseCSV(initialData, delimiter, nextHasHeader);
+      const { headers: nextHeaders, data: nextData } = parseCSV(currentTextRef.current, delimiter, nextHasHeader);
       reset(ensureEditableState({ headers: nextHeaders, data: nextData }));
       setColumnConfig((prev) => normalizeColumnConfig(prev, nextHeaders.length));
     },
-    [delimiter, initialData, reset],
+    [delimiter, reset],
+  );
+
+  // Switching encoding re-reads the original bytes: a file that was decoded with
+  // the wrong charset has to be interpreted again, not just written differently.
+  const handleEncodingChange = useCallback(
+    (nextEncoding: string) => {
+      setEncoding(nextEncoding);
+      void onEncodingChange(nextEncoding);
+      if (!initialBuffer) return;
+      const text = decodeBuffer(initialBuffer, nextEncoding);
+      currentTextRef.current = text;
+      const { headers: nextHeaders, data: nextData } = parseCSV(text, delimiter, hasHeader);
+      reset(ensureEditableState({ headers: nextHeaders, data: nextData }));
+      setColumnConfig((prev) => normalizeColumnConfig(prev, nextHeaders.length));
+    },
+    [delimiter, hasHeader, initialBuffer, onEncodingChange, reset],
   );
 
   const handleInsertColumn = useCallback(
@@ -450,7 +474,7 @@ export function App({
         loading={loading}
         loadProgress={progress}
         onDelimiterChange={handleDelimiterChange}
-        onEncodingChange={setEncoding}
+        onEncodingChange={handleEncodingChange}
         onHasHeaderChange={handleHasHeaderChange}
         onCrossHighlightChange={setCrossHighlight}
         onSearch={setSearchQuery}

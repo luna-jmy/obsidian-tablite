@@ -1,6 +1,7 @@
 import type { RefObject } from "preact";
 import { useRef, useEffect, useMemo } from "preact/hooks";
 import type { Delimiter } from "../parser/detect";
+import { ENCODING_OPTIONS } from "../parser/encoding";
 
 interface ToolbarProps {
   encoding: string;
@@ -153,6 +154,14 @@ export function Toolbar({
     [columnOrder, headers],
   );
 
+  const encodingOptions = useMemo(
+    () =>
+      ENCODING_OPTIONS.some((option) => option.value === encoding)
+        ? ENCODING_OPTIONS
+        : [...ENCODING_OPTIONS, { value: encoding, label: encoding.toUpperCase() }],
+    [encoding],
+  );
+
   return (
     <div class="tablite-toolbar">
       <div class="tablite-toolbar-left">
@@ -183,11 +192,17 @@ export function Toolbar({
           ))}
         </select>
 
-        <select ref={encodingRef} class="tablite-select" value={encoding}>
-          <option value="utf-8">UTF-8</option>
-          <option value="gbk">GBK</option>
-          <option value="windows-1252">Windows-1252</option>
-          <option value="shift_jis">Shift-JIS</option>
+        <select
+          ref={encodingRef}
+          class="tablite-select"
+          value={encoding}
+          title="File encoding — changing it re-reads the file, and saves use the chosen encoding"
+        >
+          {encodingOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
         </select>
 
         <span class="tablite-separator" />

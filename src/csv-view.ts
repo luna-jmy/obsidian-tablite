@@ -4,13 +4,23 @@ import { App } from "./components/App";
 import TablitePlugin from "./main";
 import { parseCSV } from "./parser/csv-engine";
 import { detectEncoding, detectDelimiter } from "./parser/detect";
+import { UTF8, decodeBuffer, encodeText, normalizeEncodingId } from "./parser/encoding";
 
 export const CSV_VIEW_TYPE = "tablite-csv-view";
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let i = 0; i < left.byteLength; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
 
 export class CsvView extends TextFileView {
   private rootEl: HTMLDivElement | null = null;
   private plugin: TablitePlugin;
-  private detectedEncoding = "utf-8";
+  private encoding = UTF8;
+  private rawBuffer: ArrayBuffer | null = null;
   private renderRevision = 0;
 
   // A single queue owns autosave, explicit save, and file unload.
@@ -26,18 +36,18 @@ export class CsvView extends TextFileView {
   async onLoadFile(file: TFile): Promise<void> {
     try {
       const buffer = await this.app.vault.readBinary(file);
-      const encoding = detectEncoding(buffer);
-      this.detectedEncoding = encoding;
-      if (encoding !== "utf-8") {
-        const decoder = new TextDecoder(encoding);
-        this.data = decoder.decode(buffer);
-      } else {
-        this.data = await this.app.vault.read(file);
-      }
+      // A remembered choice beats detection: detection can change when the
+      // content changes, and the user already told us what this file is.
+      const stored = this.plugin.getFileEncoding(file.path);
+      const encoding = normalizeEncodingId(stored ?? detectEncoding(buffer));
+      this.rawBuffer = buffer;
+      this.encoding = encoding;
+      this.data = decodeBuffer(buffer, encoding);
     } catch (e) {
       console.error("tablite: encoding detection failed, falling back to UTF-8", e);
+      this.rawBuffer = null;
+      this.encoding = UTF8;
       this.data = await this.app.vault.read(file);
-      this.detectedEncoding = "utf-8";
     }
     this.setViewData(this.data, true);
   }
@@ -120,13 +130,16 @@ export class CsvView extends TextFileView {
   private async drainSaves(file: TFile): Promise<void> {
     while (this.pendingSaveData !== null) {
       const dataToWrite = this.pendingSaveData;
+      // Encode with the file's own encoding: writing UTF-8 into a GBK file is
+      // what turns Chinese text into mojibake in Excel.
+      const bytes = new Uint8Array(encodeText(dataToWrite, this.encoding));
       let persisted = false;
       let failure: unknown;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          await this.app.vault.process(file, () => dataToWrite);
-          const onDisk = await this.app.vault.read(file);
-          if (onDisk !== dataToWrite) {
+          await this.app.vault.modifyBinary(file, bytes.buffer as ArrayBuffer);
+          const onDisk = new Uint8Array(await this.app.vault.readBinary(file));
+          if (!bytesEqual(onDisk, bytes)) {
             throw new Error("CSV contents did not match after saving");
           }
           persisted = true;
@@ -168,12 +181,30 @@ export class CsvView extends TextFileView {
         initialData: initialText,
         initialParsed: parsed,
         initialDelimiter: delimiter,
-        initialEncoding: this.detectedEncoding,
+        initialEncoding: this.encoding,
+        initialBuffer: this.rawBuffer,
         filePath,
         initialColumnConfig: this.plugin.getFileColumnConfig(filePath, columnCount),
         onColumnConfigChange: async (config, nextColumnCount) => {
           if (!filePath) return;
           await this.plugin.setFileColumnConfig(filePath, nextColumnCount, config);
+        },
+        onEncodingChange: async (nextEncoding: string) => {
+          const encoding = normalizeEncodingId(nextEncoding);
+          this.encoding = encoding;
+          // Keep the view data in step with what App re-decoded from the raw
+          // bytes, so the next save writes the same text in the new encoding.
+          if (this.rawBuffer) {
+            this.data = decodeBuffer(this.rawBuffer, encoding);
+            if (this.data.includes("\uFFFD")) {
+              new Notice(
+                `Tablite: this file does not decode cleanly as ${encoding}. Pick another encoding if the text looks wrong.`,
+                6000,
+              );
+            }
+          }
+          if (!filePath) return;
+          await this.plugin.setFileEncoding(filePath, encoding);
         },
         onDataChange: (newData: string) => {
           this.data = newData;
