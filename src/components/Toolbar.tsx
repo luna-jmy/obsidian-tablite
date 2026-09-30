@@ -22,6 +22,7 @@ interface ToolbarProps {
   loadProgress?: number;
   onDelimiterChange: (delimiter: Delimiter) => void;
   onEncodingChange: (encoding: string) => void;
+  onReloadEncoding: () => void;
   onHasHeaderChange: (value: boolean) => void;
   onCrossHighlightChange: (value: boolean) => void;
   onSearch: (query: string) => void;
@@ -60,6 +61,7 @@ export function Toolbar({
   loadProgress,
   onDelimiterChange,
   onEncodingChange,
+  onReloadEncoding,
   onHasHeaderChange,
   onCrossHighlightChange,
   onSearch,
@@ -75,6 +77,7 @@ export function Toolbar({
   const redoBtnRef = useRef<HTMLButtonElement>(null);
   const delimiterRef = useRef<HTMLSelectElement>(null);
   const encodingRef = useRef<HTMLSelectElement>(null);
+  const reloadEncodingRef = useRef<HTMLButtonElement>(null);
   const headerToggleRef = useRef<HTMLInputElement>(null);
   const crossHLRef = useRef<HTMLInputElement>(null);
   const searchPrevRef = useRef<HTMLButtonElement>(null);
@@ -86,6 +89,7 @@ export function Toolbar({
     const redoBtn = redoBtnRef.current;
     const delimiterSelect = delimiterRef.current;
     const encodingSelect = encodingRef.current;
+    const reloadEncodingBtn = reloadEncodingRef.current;
     const searchInput = searchInputRef.current;
     const headerToggle = headerToggleRef.current;
     const crossHLToggle = crossHLRef.current;
@@ -97,6 +101,7 @@ export function Toolbar({
     const handleRedo = () => onRedo();
     const handleDelimiter = () => delimiterSelect && onDelimiterChange(delimiterSelect.value as Delimiter);
     const handleEncoding = () => encodingSelect && onEncodingChange(encodingSelect.value);
+    const handleReloadEncoding = () => onReloadEncoding();
     const handleSearch = () => searchInput && onSearch(searchInput.value);
     const handleHeaderToggle = () => headerToggle && onHasHeaderChange(headerToggle.checked);
     const handleCrossHL = () => crossHLToggle && onCrossHighlightChange(crossHLToggle.checked);
@@ -114,6 +119,7 @@ export function Toolbar({
     redoBtn?.addEventListener("click", handleRedo);
     delimiterSelect?.addEventListener("change", handleDelimiter);
     encodingSelect?.addEventListener("change", handleEncoding);
+    reloadEncodingBtn?.addEventListener("click", handleReloadEncoding);
     headerToggle?.addEventListener("change", handleHeaderToggle);
     crossHLToggle?.addEventListener("change", handleCrossHL);
     searchPrevBtn?.addEventListener("click", handlePrev);
@@ -127,6 +133,7 @@ export function Toolbar({
       redoBtn?.removeEventListener("click", handleRedo);
       delimiterSelect?.removeEventListener("change", handleDelimiter);
       encodingSelect?.removeEventListener("change", handleEncoding);
+      reloadEncodingBtn?.removeEventListener("click", handleReloadEncoding);
       headerToggle?.removeEventListener("change", handleHeaderToggle);
       crossHLToggle?.removeEventListener("change", handleCrossHL);
       searchPrevBtn?.removeEventListener("click", handlePrev);
@@ -139,6 +146,7 @@ export function Toolbar({
     onCrossHighlightChange,
     onDelimiterChange,
     onEncodingChange,
+    onReloadEncoding,
     onFrozenCountChange,
     onHasHeaderChange,
     onRedo,
@@ -196,7 +204,7 @@ export function Toolbar({
           ref={encodingRef}
           class="tablite-select"
           value={encoding}
-          title="File encoding — changing it re-reads the file, and saves use the chosen encoding"
+          title="File encoding. Choosing one converts the file: the text on screen is kept and written back in that encoding, so Excel opens it correctly."
         >
           {encodingOptions.map((option) => (
             <option key={option.value} value={option.value}>
@@ -204,6 +212,15 @@ export function Toolbar({
             </option>
           ))}
         </select>
+
+        <button
+          ref={reloadEncodingRef}
+          class="tablite-icon-btn"
+          title="Re-read the file from disk using the selected encoding (drops unsaved edits) — use this when the text looks garbled"
+          dangerouslySetInnerHTML={{
+            __html: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>',
+          }}
+        />
 
         <span class="tablite-separator" />
 

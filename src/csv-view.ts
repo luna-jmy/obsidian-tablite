@@ -4,7 +4,7 @@ import { App } from "./components/App";
 import TablitePlugin from "./main";
 import { parseCSV } from "./parser/csv-engine";
 import { detectEncoding, detectDelimiter } from "./parser/detect";
-import { UTF8, decodeBuffer, encodeText, normalizeEncodingId } from "./parser/encoding";
+import { ENCODING_LABELS, UTF8, decodeBuffer, encodeText, normalizeEncodingId } from "./parser/encoding";
 
 export const CSV_VIEW_TYPE = "tablite-csv-view";
 
@@ -73,10 +73,16 @@ export class CsvView extends TextFileView {
     return this.data;
   }
 
-  setViewData(data: string, _clear: boolean): void {
-    // Vault notifications from our own write must not remount the editor and
-    // replace an edit that arrived while that write was in flight.
-    if (!_clear && (this.pendingSaveData !== null || this.savePromise)) return;
+  setViewData(data: string, clear: boolean): void {
+    if (!clear) {
+      // Vault notifications from our own write must not remount the editor and
+      // replace an edit that arrived while that write was in flight.
+      if (this.pendingSaveData !== null || this.savePromise) return;
+      // Obsidian hands external changes over as a UTF-8 string. Re-reading the
+      // bytes keeps a legacy-encoded file readable instead of showing mojibake.
+      void this.refreshFromDisk(data);
+      return;
+    }
     this.data = data;
     this.renderRevision += 1;
     this.renderApp();
@@ -165,6 +171,90 @@ export class CsvView extends TextFileView {
     await this.performVerifiedSave();
   }
 
+  /** Text as it stands, including edits that have not reached disk yet. */
+  private currentText(): string {
+    return this.pendingSaveData ?? this.data ?? "";
+  }
+
+  /**
+   * An external change arrived. Re-read the bytes so the text is decoded with
+   * this file's encoding rather than with the UTF-8 string Obsidian passed in.
+   */
+  private async refreshFromDisk(reported: string): Promise<void> {
+    const file = this.file;
+    if (!file) {
+      this.setViewData(reported, true);
+      return;
+    }
+    try {
+      const buffer = await this.app.vault.readBinary(file);
+      this.rawBuffer = buffer;
+      const text = decodeBuffer(buffer, this.encoding);
+      if (text === this.data) return; // the echo of our own write
+      this.data = text;
+      this.renderRevision += 1;
+      this.renderApp();
+    } catch (error) {
+      console.error("tablite: could not re-read the file after a change notification", error);
+    }
+  }
+
+  /**
+   * Switch the encoding the file is stored in. The text on screen is the source
+   * of truth, so it is written back as-is in the new encoding — re-interpreting
+   * the existing bytes here would turn a correctly displayed file into mojibake.
+   */
+  private async transcode(nextEncoding: string): Promise<void> {
+    const encoding = normalizeEncodingId(nextEncoding);
+    this.encoding = encoding;
+    if (this.file) await this.plugin.setFileEncoding(this.file.path, encoding);
+
+    const text = this.currentText();
+    if (text.includes("\uFFFD")) {
+      new Notice(
+        `Tablite: the text shown has undecodable characters, so it was not written back as ${encoding}. Use "Re-read with this encoding" first if the content looks wrong.`,
+        10000,
+      );
+      return;
+    }
+    if (!this.file) return;
+    try {
+      // Write immediately: a change that only lives in the settings is what made
+      // "UTF-8 with BOM" appear selected while the file stayed UTF-8.
+      this.scheduleSave(text);
+      await this.flushPendingSave();
+      new Notice(`Tablite: ${this.file.basename} saved as ${ENCODING_LABELS[encoding] ?? encoding}`);
+    } catch {
+      // drainSaves has already reported the failure and kept the edit pending.
+    }
+  }
+
+  /** Re-read the bytes on disk with the selected encoding (fixes wrong detection). */
+  private async reloadWithSelectedEncoding(): Promise<void> {
+    const file = this.file;
+    if (!file) return;
+    if (this.saveDebounceTimer !== null) {
+      window.clearTimeout(this.saveDebounceTimer);
+      this.saveDebounceTimer = null;
+    }
+    // Unsaved edits came from the old interpretation, so they cannot survive.
+    this.pendingSaveData = null;
+    try {
+      const buffer = await this.app.vault.readBinary(file);
+      this.rawBuffer = buffer;
+      this.data = decodeBuffer(buffer, this.encoding);
+      await this.plugin.setFileEncoding(file.path, this.encoding);
+      this.renderRevision += 1;
+      this.renderApp();
+      if (this.data.includes("\uFFFD")) {
+        new Notice(`Tablite: ${file.basename} does not decode cleanly as ${this.encoding}. Try another encoding.`, 8000);
+      }
+    } catch (error) {
+      console.error("tablite: could not re-read the file", error);
+      new Notice(`Tablite: could not re-read ${file.path}.`, 8000);
+    }
+  }
+
   private renderApp(): void {
     if (!this.rootEl) return;
     const initialText = this.data ?? "";
@@ -182,30 +272,14 @@ export class CsvView extends TextFileView {
         initialParsed: parsed,
         initialDelimiter: delimiter,
         initialEncoding: this.encoding,
-        initialBuffer: this.rawBuffer,
         filePath,
         initialColumnConfig: this.plugin.getFileColumnConfig(filePath, columnCount),
         onColumnConfigChange: async (config, nextColumnCount) => {
           if (!filePath) return;
           await this.plugin.setFileColumnConfig(filePath, nextColumnCount, config);
         },
-        onEncodingChange: async (nextEncoding: string) => {
-          const encoding = normalizeEncodingId(nextEncoding);
-          this.encoding = encoding;
-          // Keep the view data in step with what App re-decoded from the raw
-          // bytes, so the next save writes the same text in the new encoding.
-          if (this.rawBuffer) {
-            this.data = decodeBuffer(this.rawBuffer, encoding);
-            if (this.data.includes("\uFFFD")) {
-              new Notice(
-                `Tablite: this file does not decode cleanly as ${encoding}. Pick another encoding if the text looks wrong.`,
-                6000,
-              );
-            }
-          }
-          if (!filePath) return;
-          await this.plugin.setFileEncoding(filePath, encoding);
-        },
+        onEncodingChange: (nextEncoding: string) => this.transcode(nextEncoding),
+        onReloadEncoding: () => this.reloadWithSelectedEncoding(),
         onDataChange: (newData: string) => {
           this.data = newData;
           this.scheduleSave(newData);

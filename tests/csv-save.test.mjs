@@ -49,8 +49,10 @@ async function setup(t, { text = "Titre;Commentaire\r\nLivre;\r\n", bytes, encod
   const fire = () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(fn => fn()); };
   const onDisk = (path = "a.csv") => files.get(path);
   const textOnDisk = (path = "a.csv") => new TextDecoder().decode(files.get(path));
+  // The view re-reads the file asynchronously after an external change.
+  const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
   t.after(() => { timers.clear(); delete globalThis.window; delete globalThis.notices; });
-  return { view, vault, files, edit, fire, timers, savedEncodings, onDisk, textOnDisk };
+  return { view, vault, files, edit, fire, timers, settle, savedEncodings, onDisk, textOnDisk, notices: globalThis.notices };
 }
 
 test("committed semicolon CSV edit persists when closed before debounce", async t => {
@@ -225,17 +227,76 @@ test("a UTF-8 BOM survives an edit so Excel keeps reading the file", async t => 
   assert.deepEqual(Array.from(onDisk()), Array.from(bytesOf([0xef, 0xbb, 0xbf], "a,b\n1,3\n")));
 });
 
-test("changing the encoding re-reads the bytes and remembers the choice", async t => {
-  const bytes = bytesOf("a,b\n", [0xd6, 0xd0, 0xce, 0xc4], "\n");
-  const { view, savedEncodings, edit } = await setup(t, { encoding: "utf-8", bytes });
-  assert.notEqual(view.getViewData(), "a,b\n中文\n", "UTF-8 decoding of GBK bytes is expected to be wrong");
+test("choosing an encoding converts the file without touching what is displayed", async t => {
+  const { view, savedEncodings, onDisk, textOnDisk } = await setup(t, {
+    text: "a,b\n中文\n",
+    bytes: utf8("a,b\n中文\n"),
+    encoding: "utf-8",
+  });
 
   await view.rootEl.props.onEncodingChange("gbk");
-  assert.equal(view.getViewData(), "a,b\n中文\n");
-  assert.deepEqual(savedEncodings, [{ path: "a.csv", encoding: "gbk" }]);
 
-  edit("a,b\n中文\n");
-  await view.flushPendingSave();
-  const written = new Uint8Array(await view.app.vault.readBinary(view.file));
-  assert.deepEqual(Array.from(written), Array.from(bytes));
+  assert.equal(view.getViewData(), "a,b\n中文\n", "the shown text must survive a conversion");
+  assert.deepEqual(savedEncodings, [{ path: "a.csv", encoding: "gbk" }]);
+  assert.deepEqual(
+    Array.from(onDisk()),
+    Array.from(bytesOf("a,b\n", [0xd6, 0xd0, 0xce, 0xc4], "\n")),
+    "the file must be rewritten as GBK straight away",
+  );
+  assert.equal(new TextDecoder("gbk").decode(onDisk()), "a,b\n中文\n");
+  assert.notEqual(textOnDisk(), "a,b\n中文\n", "UTF-8 decoding must no longer be what is on disk");
+});
+
+test("choosing UTF-8 with BOM writes the BOM even without an edit", async t => {
+  const { view, onDisk } = await setup(t, {
+    text: "a,b\n中文\n",
+    bytes: utf8("a,b\n中文\n"),
+    encoding: "utf-8",
+  });
+
+  await view.rootEl.props.onEncodingChange("utf-8-bom");
+
+  assert.deepEqual(Array.from(onDisk().slice(0, 3)), [0xef, 0xbb, 0xbf]);
+  assert.equal(view.getViewData(), "a,b\n中文\n", "the BOM must not appear in the editor");
+  assert.equal(new TextDecoder("utf-8").decode(onDisk()), "a,b\n中文\n");
+});
+
+test("a conversion is refused when the shown text could not be decoded", async t => {
+  // GBK bytes opened as UTF-8, so the shown text is full of replacement chars.
+  const { view, savedEncodings, textOnDisk, notices } = await setup(t, {
+    encoding: "utf-8",
+    bytes: bytesOf("a,b\n", [0xd6, 0xd0, 0xce, 0xc4], "\n"),
+  });
+  const before = textOnDisk();
+
+  await view.rootEl.props.onEncodingChange("gbk");
+
+  assert.deepEqual(savedEncodings, [{ path: "a.csv", encoding: "gbk" }], "the choice is still remembered");
+  assert.equal(textOnDisk(), before, "a lossy decode must not be written back");
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /undecodable/);
+});
+
+test("re-reading reinterprets the bytes on disk with the selected encoding", async t => {
+  const bytes = bytesOf("a,b\n", [0xd6, 0xd0, 0xce, 0xc4], "\n");
+  const { view, textOnDisk } = await setup(t, { encoding: "utf-8", bytes });
+  assert.notEqual(view.getViewData(), "a,b\n中文\n", "UTF-8 decoding of GBK bytes is expected to be wrong");
+  const before = textOnDisk();
+
+  await view.rootEl.props.onEncodingChange("gbk"); // remembers GBK without converting
+  await view.rootEl.props.onReloadEncoding();
+
+  assert.equal(view.getViewData(), "a,b\n中文\n");
+  assert.equal(textOnDisk(), before, "re-reading must not rewrite the file");
+});
+
+test("a file change reported as UTF-8 does not garble a GBK file", async t => {
+  const bytes = bytesOf("a,b\n", [0xd6, 0xd0, 0xce, 0xc4], "\n");
+  const { view, settle } = await setup(t, { encoding: "gbk", bytes });
+
+  // Obsidian reports external changes as a UTF-8 string, which is mojibake here.
+  view.setViewData("a,b\n\uFFFD\uFFFD\n", false);
+  await settle();
+
+  assert.equal(view.getViewData(), "a,b\n中文\n");
 });

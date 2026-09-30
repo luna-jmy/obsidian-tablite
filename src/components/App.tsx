@@ -1,6 +1,5 @@
 import { useMemo, useCallback, useRef, useState, useEffect } from "preact/hooks";
 import { type Delimiter } from "../parser/detect";
-import { decodeBuffer } from "../parser/encoding";
 import { parseCSV, serializeCSV, type ParseResult } from "../parser/csv-engine";
 import { useTableData, type TableState } from "../hooks/useTableData";
 import { useProgressiveLoad } from "../hooks/useProgressiveLoad";
@@ -18,12 +17,13 @@ interface AppProps {
   initialParsed: ParseResult;
   initialDelimiter: Delimiter;
   initialEncoding?: string;
-  /** Raw file bytes, so a different encoding can be applied without re-reading. */
-  initialBuffer?: ArrayBuffer | null;
   filePath: string;
   initialColumnConfig: ColumnConfig;
   onColumnConfigChange: (config: ColumnConfig, columnCount: number) => void | Promise<void>;
+  /** Switch the encoding the file is stored in; the shown text is kept as-is. */
   onEncodingChange: (encoding: string) => void | Promise<void>;
+  /** Re-read the file bytes with the selected encoding. */
+  onReloadEncoding: () => void | Promise<void>;
   onDataChange: (data: string) => void;
 }
 
@@ -119,11 +119,11 @@ export function App({
   initialParsed,
   initialDelimiter,
   initialEncoding,
-  initialBuffer,
   filePath,
   initialColumnConfig,
   onColumnConfigChange,
   onEncodingChange,
+  onReloadEncoding,
   onDataChange,
 }: AppProps) {
   // Use pre-parsed result from csv-view — no redundant re-parsing
@@ -135,8 +135,6 @@ export function App({
   const [selection, setSelection] = useState<SelectionRange | null>(null);
   const [hasHeader, setHasHeader] = useState<boolean>(initialParsed.hasHeader);
   const sortedRowIndicesRef = useRef<number[] | null>(null);
-  // Latest text for the file, so re-parsing keeps whatever encoding was applied.
-  const currentTextRef = useRef<string>(initialData);
 
   const initialState = useMemo<TableState>(
     () => ensureEditableState({ headers: initialParsed.headers, data: initialParsed.data }),
@@ -221,37 +219,32 @@ export function App({
   const handleDelimiterChange = useCallback(
     (newDelimiter: Delimiter) => {
       setDelimiter(newDelimiter);
-      const { headers: nextHeaders, data: nextData } = parseCSV(currentTextRef.current, newDelimiter, hasHeader);
+      const { headers: nextHeaders, data: nextData } = parseCSV(initialData, newDelimiter, hasHeader);
       reset(ensureEditableState({ headers: nextHeaders, data: nextData }));
       setColumnConfig((prev) => normalizeColumnConfig(prev, nextHeaders.length));
     },
-    [hasHeader, reset],
+    [hasHeader, initialData, reset],
   );
 
   const handleHasHeaderChange = useCallback(
     (nextHasHeader: boolean) => {
       setHasHeader(nextHasHeader);
-      const { headers: nextHeaders, data: nextData } = parseCSV(currentTextRef.current, delimiter, nextHasHeader);
+      const { headers: nextHeaders, data: nextData } = parseCSV(initialData, delimiter, nextHasHeader);
       reset(ensureEditableState({ headers: nextHeaders, data: nextData }));
       setColumnConfig((prev) => normalizeColumnConfig(prev, nextHeaders.length));
     },
-    [delimiter, reset],
+    [delimiter, initialData, reset],
   );
 
-  // Switching encoding re-reads the original bytes: a file that was decoded with
-  // the wrong charset has to be interpreted again, not just written differently.
+  // Changing the encoding converts the file: the text on screen is what gets
+  // written, in the new charset. The table is left untouched, so choosing an
+  // encoding can never garble what you are looking at.
   const handleEncodingChange = useCallback(
     (nextEncoding: string) => {
       setEncoding(nextEncoding);
       void onEncodingChange(nextEncoding);
-      if (!initialBuffer) return;
-      const text = decodeBuffer(initialBuffer, nextEncoding);
-      currentTextRef.current = text;
-      const { headers: nextHeaders, data: nextData } = parseCSV(text, delimiter, hasHeader);
-      reset(ensureEditableState({ headers: nextHeaders, data: nextData }));
-      setColumnConfig((prev) => normalizeColumnConfig(prev, nextHeaders.length));
     },
-    [delimiter, hasHeader, initialBuffer, onEncodingChange, reset],
+    [onEncodingChange],
   );
 
   const handleInsertColumn = useCallback(
@@ -475,6 +468,7 @@ export function App({
         loadProgress={progress}
         onDelimiterChange={handleDelimiterChange}
         onEncodingChange={handleEncodingChange}
+        onReloadEncoding={onReloadEncoding}
         onHasHeaderChange={handleHasHeaderChange}
         onCrossHighlightChange={setCrossHighlight}
         onSearch={setSearchQuery}

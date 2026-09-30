@@ -3,6 +3,24 @@
 All notable changes to Tablite are documented here. The release workflow turns
 each `## <version>` section into the body of the matching GitHub release.
 
+## 未发布
+
+### Fixed
+
+- **Choosing an encoding now converts the file immediately.** The choice used to be
+  remembered in the settings only, so "UTF-8 with BOM" could be selected while the file
+  on disk stayed plain UTF-8 and Excel kept showing mojibake.
+- **Choosing an encoding no longer garbles the table.** Interpreting and converting a
+  file are two different actions now: the dropdown converts the text that is already on
+  screen into the chosen encoding and writes it straight back (what you see never
+  changes), while the new ↻ button re-reads the file from disk with the chosen encoding
+  for the case where the charset was detected wrongly.
+- **External changes no longer turn a GBK file into mojibake.** Obsidian reports file
+  changes as a UTF-8 string; the bytes are re-read with the file's own encoding instead
+  of replacing the content with that string.
+- Converting is refused, with a notice, when the text on screen contains undecodable
+  characters, so a wrongly detected charset can no longer be written over the file.
+
 ## 0.4.2
 
 ### Fixed
