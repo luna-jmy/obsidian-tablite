@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "*"
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "branch push triggers work"
+      - run: echo "push triggers work: ${{ github.ref_name }}"
