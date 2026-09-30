@@ -3,7 +3,7 @@
 All notable changes to Tablite are documented here. The release workflow turns
 each `## <version>` section into the body of the matching GitHub release.
 
-## 未发布
+## 0.4.2
 
 ### Fixed
 
