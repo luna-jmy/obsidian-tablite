@@ -1,9 +1,18 @@
 name: Release
 
+# Tag filters are glob patterns, not regexes: "[0-9]+.[0-9]+.[0-9]+" never
+# matches "0.4.2" because "+" is a literal character there. Match every tag
+# and validate the shape below instead, so a mistyped tag fails loudly rather
+# than silently skipping the release.
 on:
   push:
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+      - "*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.4.2 (must match manifest.json)"
+        required: true
 
 permissions:
   contents: write
@@ -24,9 +33,24 @@ jobs:
       - run: npm run build
       - run: mkdir -p release && cp main.js manifest.json styles.css release/
 
-      - name: Extract version from tag
+      - name: Resolve and verify version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::A release needs an x.y.z version, got '${version}'"
+            exit 1
+          fi
+          manifest_version="$(node -p "require('./manifest.json').version")"
+          if [ "$version" != "$manifest_version" ]; then
+            echo "::error::Version ${version} does not match manifest.json (${manifest_version})"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Extract changelog for this version
         id: changelog
@@ -34,7 +58,7 @@ jobs:
           delimiter="$(openssl rand -hex 8)"
           {
             echo "BODY<<${delimiter}"
-            awk "/^## ${GITHUB_REF_NAME}/{found=1; next} /^## /{found=0} found{print}" CHANGELOG.md
+            awk "/^## ${{ steps.version.outputs.VERSION }}/{found=1; next} /^## /{found=0} found{print}" CHANGELOG.md
             echo "${delimiter}"
           } >> "$GITHUB_OUTPUT"
 
