@@ -1,9 +1,9 @@
-name: Release Obsidian Plugin
+name: Release
 
 on:
   push:
     tags:
-      - "*"
+      - "[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: write
@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,20 +19,32 @@ jobs:
         with:
           node-version: 20
 
-      - run: npm install
-
+      - run: npm ci
+      - run: npm run test
       - run: npm run build
+      - run: mkdir -p release && cp main.js manifest.json styles.css release/
 
-      - name: Package and release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract changelog for this version
+        id: changelog
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          mkdir -p tablite
-          cp main.js styles.css manifest.json tablite/
-          zip -r tablite-${tag}.zip tablite/
-          gh release create "$tag" \
-            --title "Tablite ${tag}" \
-            --generate-notes \
-            tablite-${tag}.zip \
-            main.js styles.css manifest.json
+          delimiter="$(openssl rand -hex 8)"
+          {
+            echo "BODY<<${delimiter}"
+            awk "/^## ${GITHUB_REF_NAME}/{found=1; next} /^## /{found=0} found{print}" CHANGELOG.md
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: ${{ steps.version.outputs.VERSION }}
+          body: ${{ steps.changelog.outputs.BODY }}
+          files: |
+            release/main.js
+            release/manifest.json
+            release/styles.css

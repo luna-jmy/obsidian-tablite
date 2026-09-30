@@ -2,3 +2,7 @@ node_modules/
 main.js
 *.map
 .DS_Store
+
+# Release artifacts: built by `npm run build` and rebuilt in CI by
+# .github/workflows/release.yml, so they are never committed.
+release/
